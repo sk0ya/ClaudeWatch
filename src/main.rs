@@ -607,6 +607,7 @@ fn main() -> eframe::Result<()> {
             .with_always_on_top()
             .with_title("ClaudeWatch")
             .with_decorations(false)
+            .with_taskbar(true)
             .with_icon(load_icon()),
         ..Default::default()
     };
