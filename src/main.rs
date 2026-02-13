@@ -371,9 +371,10 @@ impl eframe::App for ClaudeWatchApp {
 
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
 
-        // Reduce global spacing
+        // Reduce global spacing & disable text selection on labels (window is draggable)
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = egui::vec2(4.0, 2.0);
+        style.interaction.selectable_labels = false;
         ctx.set_style(style);
 
         // Drag anywhere to move
@@ -542,6 +543,20 @@ impl eframe::App for ClaudeWatchApp {
                 desired_height,
             )));
         }
+
+        // Show grab cursor on draggable areas (but not on buttons)
+        let is_dragging = ctx.input(|i| i.pointer.primary_down());
+        ctx.output_mut(|o| {
+            if o.cursor_icon == egui::CursorIcon::Default
+                || o.cursor_icon == egui::CursorIcon::Text
+            {
+                o.cursor_icon = if is_dragging {
+                    egui::CursorIcon::Grabbing
+                } else {
+                    egui::CursorIcon::Grab
+                };
+            }
+        });
     }
 }
 
