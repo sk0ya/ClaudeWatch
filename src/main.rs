@@ -400,7 +400,24 @@ impl eframe::App for ClaudeWatchApp {
 
                 if let Some(ref state) = rl {
                     if let Some(ref err) = state.error {
-                        ui.colored_label(egui::Color32::from_rgb(200, 100, 50), format!("Err: {err}"));
+                        // Show friendly message for common "not running" errors
+                        let display = if err.starts_with("Read creds:")
+                            || err == "No OAuth credentials"
+                            || err == "Home directory not found"
+                        {
+                            "Waiting for Claude Code...".to_string()
+                        } else if err.starts_with("Refresh failed")
+                            || err.starts_with("Parse usage")
+                            || err.starts_with("Usage API 401")
+                        {
+                            "Auth expired - restart Claude Code".to_string()
+                        } else {
+                            format!("Err: {err}")
+                        };
+                        ui.colored_label(
+                            egui::Color32::from_rgb(150, 150, 150),
+                            display,
+                        );
                     } else {
                         let usage = &state.usage;
                         let mut has_limit = false;
