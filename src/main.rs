@@ -235,7 +235,7 @@ impl ClaudeWatchApp {
             stats_error: None,
             rate_limit,
             last_content_height: 0.0,
-            compact_mode: false,
+            compact_mode: true,
         };
         app.load_stats();
         app
