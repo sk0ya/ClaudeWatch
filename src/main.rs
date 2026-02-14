@@ -379,6 +379,12 @@ impl eframe::App for ClaudeWatchApp {
         style.interaction.selectable_labels = false;
         ctx.set_style(style);
 
+        // Double-click to toggle compact/full view
+        if ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+            self.compact_mode = !self.compact_mode;
+            self.last_content_height = 0.0;
+        }
+
         // Drag anywhere to move
         if ctx.input(|i| i.pointer.primary_down()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
