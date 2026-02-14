@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 // --- Stats Cache (local file) ---
 
@@ -216,6 +217,99 @@ fn fetch_rate_limit() -> RateLimitState {
     }
 }
 
+// --- Claude Code Instance Detection ---
+
+#[derive(Clone, Debug)]
+struct ClaudeInstance {
+    pid: u32,
+    cwd: String,
+    active: bool, // true = Claude is generating (user waiting)
+}
+
+/// Convert a CWD path to the ~/.claude/projects/ directory name.
+/// e.g. "C:\Projects\ClaudeWatch" → "C--Projects-ClaudeWatch"
+fn cwd_to_project_dir(cwd: &str) -> String {
+    cwd.trim_end_matches(['\\', '/'])
+        .replace(':', "-")
+        .replace(['\\', '/'], "-")
+}
+
+/// Check if the most recently modified .jsonl file in the project dir
+/// was updated within the last `threshold` seconds (= Claude is generating).
+fn is_session_active(cwd: &str, threshold_secs: u64) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let project_dir = home.join(".claude").join("projects").join(cwd_to_project_dir(cwd));
+    let Ok(entries) = std::fs::read_dir(&project_dir) else {
+        return false;
+    };
+
+    let now = std::time::SystemTime::now();
+    let mut newest_mod = None;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Ok(meta) = path.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if newest_mod.map_or(true, |prev| modified > prev) {
+                    newest_mod = Some(modified);
+                }
+            }
+        }
+    }
+
+    newest_mod.map_or(false, |t| {
+        now.duration_since(t)
+            .map_or(false, |d| d.as_secs() < threshold_secs)
+    })
+}
+
+fn detect_claude_instances() -> Vec<ClaudeInstance> {
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always),
+    );
+
+    let mut instances = Vec::new();
+    for (pid, process) in sys.processes() {
+        let cmd_parts = process.cmd();
+        let is_claude_code = cmd_parts
+            .iter()
+            .any(|s| s.to_string_lossy().contains("claude-code"));
+        if !is_claude_code {
+            continue;
+        }
+        let is_cli = cmd_parts
+            .iter()
+            .any(|s| s.to_string_lossy().contains("cli.js"));
+        if !is_cli {
+            continue;
+        }
+
+        let cwd = process
+            .cwd()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let active = is_session_active(&cwd, 15);
+
+        instances.push(ClaudeInstance {
+            pid: pid.as_u32(),
+            cwd,
+            active,
+        });
+    }
+    instances
+}
+
 // --- App ---
 
 struct ClaudeWatchApp {
@@ -223,17 +317,22 @@ struct ClaudeWatchApp {
     last_stats_load: Instant,
     stats_error: Option<String>,
     rate_limit: Arc<Mutex<Option<RateLimitState>>>,
+    instances: Arc<Mutex<Vec<ClaudeInstance>>>,
     last_content_height: f32,
     compact_mode: bool,
 }
 
 impl ClaudeWatchApp {
-    fn new(rate_limit: Arc<Mutex<Option<RateLimitState>>>) -> Self {
+    fn new(
+        rate_limit: Arc<Mutex<Option<RateLimitState>>>,
+        instances: Arc<Mutex<Vec<ClaudeInstance>>>,
+    ) -> Self {
         let mut app = Self {
             stats: None,
             last_stats_load: Instant::now(),
             stats_error: None,
             rate_limit,
+            instances,
             last_content_height: 0.0,
             compact_mode: true,
         };
@@ -423,6 +522,55 @@ impl eframe::App for ClaudeWatchApp {
                         }
                     });
                 });
+
+                // --- Running Instances ---
+                {
+                    let instances = self.instances.lock().unwrap().clone();
+                    if instances.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(120, 120, 120),
+                            "No Claude Code running",
+                        );
+                    } else {
+                        for inst in &instances {
+                            let trimmed = inst.cwd.trim_end_matches(['\\', '/']);
+                            let folder = trimmed
+                                .rsplit_once(['\\', '/'])
+                                .map(|(_, name)| name)
+                                .unwrap_or(trimmed);
+
+                            let (dot_color, status_text) = if inst.active {
+                                (egui::Color32::from_rgb(80, 200, 80), "working")
+                            } else {
+                                (egui::Color32::from_rgb(120, 120, 120), "idle")
+                            };
+
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(8.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(
+                                    rect.center(),
+                                    3.5,
+                                    dot_color,
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{folder} ({status_text})"))
+                                        .small()
+                                        .color(if inst.active {
+                                            egui::Color32::from_rgb(200, 200, 200)
+                                        } else {
+                                            egui::Color32::from_rgb(140, 140, 140)
+                                        }),
+                                )
+                                .on_hover_text(format!("{} (PID:{})", inst.cwd, inst.pid));
+                            });
+                        }
+                    }
+                }
+
+                ui.add_space(2.0);
 
                 // --- Rate Limit ---
                 let rl = self.rate_limit.lock().unwrap().clone();
@@ -630,6 +778,7 @@ fn load_icon() -> egui::IconData {
 
 fn main() -> eframe::Result<()> {
     let rate_limit: Arc<Mutex<Option<RateLimitState>>> = Arc::new(Mutex::new(None));
+    let instances: Arc<Mutex<Vec<ClaudeInstance>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Background thread for rate limit polling
     let rl_clone = Arc::clone(&rate_limit);
@@ -639,7 +788,16 @@ fn main() -> eframe::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(60));
     });
 
+    // Background thread for instance detection
+    let inst_clone = Arc::clone(&instances);
+    std::thread::spawn(move || loop {
+        let detected = detect_claude_instances();
+        *inst_clone.lock().unwrap() = detected;
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    });
+
     let rl_for_app = Arc::clone(&rate_limit);
+    let inst_for_app = Arc::clone(&instances);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([300.0, 260.0])
@@ -654,6 +812,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "ClaudeWatch",
         options,
-        Box::new(move |_cc| Ok(Box::new(ClaudeWatchApp::new(rl_for_app)))),
+        Box::new(move |_cc| Ok(Box::new(ClaudeWatchApp::new(rl_for_app, inst_for_app)))),
     )
 }
