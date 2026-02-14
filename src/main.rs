@@ -224,6 +224,7 @@ struct ClaudeWatchApp {
     stats_error: Option<String>,
     rate_limit: Arc<Mutex<Option<RateLimitState>>>,
     last_content_height: f32,
+    compact_mode: bool,
 }
 
 impl ClaudeWatchApp {
@@ -234,6 +235,7 @@ impl ClaudeWatchApp {
             stats_error: None,
             rate_limit,
             last_content_height: 0.0,
+            compact_mode: false,
         };
         app.load_stats();
         app
@@ -385,11 +387,30 @@ impl eframe::App for ClaudeWatchApp {
         let panel_resp = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(6)))
             .show(ctx, |ui| {
-                // Close button row
+                // Context menu (right-click)
+                ui.interact(ui.max_rect(), ui.id().with("ctx_menu"), egui::Sense::click())
+                    .context_menu(|ui| {
+                        let label = if self.compact_mode { "Full View" } else { "Compact View" };
+                        if ui.button(label).clicked() {
+                            self.compact_mode = !self.compact_mode;
+                            self.last_content_height = 0.0;
+                            ui.close_menu();
+                        }
+                        if ui.button("Close").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            ui.close_menu();
+                        }
+                    });
+
+                // Title bar + close button
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("ClaudeWatch").strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("X").clicked() {
+                        let btn = ui.small_button("X");
+                        if btn.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+                        }
+                        if btn.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
@@ -486,66 +507,68 @@ impl eframe::App for ClaudeWatchApp {
                     ui.label("Fetching...");
                 }
 
-                ui.separator();
+                if !self.compact_mode {
+                    ui.separator();
 
-                // --- Stats ---
-                if let Some(ref err) = self.stats_error {
-                    ui.colored_label(egui::Color32::from_rgb(200, 100, 50), err);
-                    return ui.cursor().top();
-                }
+                    // --- Stats ---
+                    if let Some(ref err) = self.stats_error {
+                        ui.colored_label(egui::Color32::from_rgb(200, 100, 50), err);
+                        return ui.cursor().top();
+                    }
 
-                let Some(stats) = &self.stats else {
-                    return ui.cursor().top();
-                };
+                    let Some(stats) = &self.stats else {
+                        return ui.cursor().top();
+                    };
 
-                let today = Self::today_str();
-                let today_activity = stats.daily_activity.iter().find(|a| a.date == today);
+                    let today = Self::today_str();
+                    let today_activity = stats.daily_activity.iter().find(|a| a.date == today);
 
-                egui::Grid::new("today")
-                    .num_columns(4)
-                    .spacing([8.0, 2.0])
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Today").strong());
-                        if let Some(act) = today_activity {
-                            ui.label(format!("{}msg", act.message_count));
-                            ui.label(format!("{}ses", act.session_count));
-                            ui.label(format!("{}tool", act.tool_call_count));
-                        } else {
-                            ui.label("-");
-                        }
-                        ui.end_row();
-
-                        ui.label(egui::RichText::new("Total").strong());
-                        ui.label(format!("{}msg", stats.total_messages));
-                        ui.label(format!("{}ses", stats.total_sessions));
-                        ui.label("");
-                        ui.end_row();
-                    });
-
-                ui.separator();
-
-                // Model Usage
-                let mut models: Vec<_> = stats.model_usage.iter().collect();
-                models.sort_by_key(|(name, _)| name.to_string());
-
-                egui::Grid::new("models")
-                    .num_columns(3)
-                    .spacing([8.0, 2.0])
-                    .show(ui, |ui| {
-                        for (name, usage) in &models {
-                            ui.label(Self::short_model_name(name));
-                            ui.label(format!(
-                                "i:{} o:{}",
-                                Self::format_tokens(usage.input_tokens),
-                                Self::format_tokens(usage.output_tokens)
-                            ));
-                            ui.label(format!(
-                                "c:{}",
-                                Self::format_tokens(usage.cache_read_input_tokens)
-                            ));
+                    egui::Grid::new("today")
+                        .num_columns(4)
+                        .spacing([8.0, 2.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Today").strong());
+                            if let Some(act) = today_activity {
+                                ui.label(format!("{}msg", act.message_count));
+                                ui.label(format!("{}ses", act.session_count));
+                                ui.label(format!("{}tool", act.tool_call_count));
+                            } else {
+                                ui.label("-");
+                            }
                             ui.end_row();
-                        }
-                    });
+
+                            ui.label(egui::RichText::new("Total").strong());
+                            ui.label(format!("{}msg", stats.total_messages));
+                            ui.label(format!("{}ses", stats.total_sessions));
+                            ui.label("");
+                            ui.end_row();
+                        });
+
+                    ui.separator();
+
+                    // Model Usage
+                    let mut models: Vec<_> = stats.model_usage.iter().collect();
+                    models.sort_by_key(|(name, _)| name.to_string());
+
+                    egui::Grid::new("models")
+                        .num_columns(3)
+                        .spacing([8.0, 2.0])
+                        .show(ui, |ui| {
+                            for (name, usage) in &models {
+                                ui.label(Self::short_model_name(name));
+                                ui.label(format!(
+                                    "i:{} o:{}",
+                                    Self::format_tokens(usage.input_tokens),
+                                    Self::format_tokens(usage.output_tokens)
+                                ));
+                                ui.label(format!(
+                                    "c:{}",
+                                    Self::format_tokens(usage.cache_read_input_tokens)
+                                ));
+                                ui.end_row();
+                            }
+                        });
+                }
 
                 // Return content bottom position
                 ui.cursor().top()
@@ -561,17 +584,21 @@ impl eframe::App for ClaudeWatchApp {
             )));
         }
 
-        // Show grab cursor on draggable areas (but not on buttons)
+        // Show grab cursor on draggable areas (but not on buttons/interactive widgets)
         let is_dragging = ctx.input(|i| i.pointer.primary_down());
         ctx.output_mut(|o| {
-            if o.cursor_icon == egui::CursorIcon::Default
-                || o.cursor_icon == egui::CursorIcon::Text
-            {
-                o.cursor_icon = if is_dragging {
-                    egui::CursorIcon::Grabbing
-                } else {
-                    egui::CursorIcon::Grab
-                };
+            match o.cursor_icon {
+                egui::CursorIcon::Default | egui::CursorIcon::Text => {
+                    o.cursor_icon = if is_dragging {
+                        egui::CursorIcon::Grabbing
+                    } else {
+                        egui::CursorIcon::Grab
+                    };
+                }
+                egui::CursorIcon::PointingHand => {
+                    o.cursor_icon = egui::CursorIcon::Default;
+                }
+                _ => {}
             }
         });
     }
