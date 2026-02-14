@@ -384,6 +384,8 @@ impl eframe::App for ClaudeWatchApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
 
+        let close_hovered = std::cell::Cell::new(false);
+
         let panel_resp = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(6)))
             .show(ctx, |ui| {
@@ -408,7 +410,7 @@ impl eframe::App for ClaudeWatchApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let btn = ui.small_button("X");
                         if btn.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+                            close_hovered.set(true);
                         }
                         if btn.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -584,23 +586,27 @@ impl eframe::App for ClaudeWatchApp {
             )));
         }
 
-        // Show grab cursor on draggable areas (but not on buttons/interactive widgets)
-        let is_dragging = ctx.input(|i| i.pointer.primary_down());
-        ctx.output_mut(|o| {
-            match o.cursor_icon {
-                egui::CursorIcon::Default | egui::CursorIcon::Text => {
+        // Show grab cursor on draggable areas, but not on buttons or popup menus
+        let over_popup = ctx.input(|i| i.pointer.hover_pos()).map_or(false, |pos| {
+            ctx.layer_id_at(pos).map_or(false, |id| {
+                id.order == egui::Order::Foreground || id.order == egui::Order::Tooltip
+            })
+        });
+
+        if !close_hovered.get() && !over_popup {
+            let is_dragging = ctx.input(|i| i.pointer.primary_down());
+            ctx.output_mut(|o| {
+                if o.cursor_icon == egui::CursorIcon::Default
+                    || o.cursor_icon == egui::CursorIcon::Text
+                {
                     o.cursor_icon = if is_dragging {
                         egui::CursorIcon::Grabbing
                     } else {
                         egui::CursorIcon::Grab
                     };
                 }
-                egui::CursorIcon::PointingHand => {
-                    o.cursor_icon = egui::CursorIcon::Default;
-                }
-                _ => {}
-            }
-        });
+            });
+        }
     }
 }
 
