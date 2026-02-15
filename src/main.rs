@@ -274,23 +274,21 @@ fn detect_claude_instances() -> Vec<ClaudeInstance> {
         ProcessesToUpdate::All,
         true,
         ProcessRefreshKind::nothing()
-            .with_cmd(UpdateKind::Always)
+            .with_exe(UpdateKind::Always)
             .with_cwd(UpdateKind::Always),
     );
 
     let mut instances = Vec::new();
     for (pid, process) in sys.processes() {
-        let cmd_parts = process.cmd();
-        let is_claude_code = cmd_parts
-            .iter()
-            .any(|s| s.to_string_lossy().contains("claude-code"));
+        let exe_path = process
+            .exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Native Windows installation: ~/.local/bin/claude.exe
+        let is_claude_code = exe_path.contains(".local")
+            && exe_path.ends_with("claude.exe");
         if !is_claude_code {
-            continue;
-        }
-        let is_cli = cmd_parts
-            .iter()
-            .any(|s| s.to_string_lossy().contains("cli.js"));
-        if !is_cli {
             continue;
         }
 
