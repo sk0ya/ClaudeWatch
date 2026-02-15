@@ -76,12 +76,12 @@ struct RateLimitEntry {
     resets_at: String,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 struct ExtraUsageEntry {
     is_enabled: bool,
-    monthly_limit: f64,
-    used_credits: f64,
-    utilization: f64,
+    monthly_limit: Option<f64>,
+    used_credits: Option<f64>,
+    utilization: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -643,9 +643,9 @@ impl eframe::App for ClaudeWatchApp {
                             if extra.is_enabled {
                                 let extra_label = format!(
                                     "${:.0}/${:.0}",
-                                    extra.used_credits, extra.monthly_limit
+                                    extra.used_credits.unwrap_or(0.0), extra.monthly_limit.unwrap_or(0.0)
                                 );
-                                Self::draw_usage_bar(ui, &extra_label, extra.utilization, "extra");
+                                Self::draw_usage_bar(ui, &extra_label, extra.utilization.unwrap_or(0.0), "extra");
                                 has_limit = true;
                             }
                         }
