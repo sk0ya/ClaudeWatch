@@ -223,7 +223,6 @@ fn fetch_rate_limit() -> RateLimitState {
 struct CodexWindowInfo {
     used_percent: f64,
     resets_at: u64,    // Unix timestamp (seconds)
-    window_minutes: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -237,12 +236,10 @@ struct CodexRateLimit {
 #[derive(Clone, Debug, Default)]
 struct CodexRateLimitState {
     limits: Vec<CodexRateLimit>,
-    read_at: chrono::DateTime<chrono::Local>,
     error: Option<String>,
 }
 
 fn fetch_codex_rate_limits() -> CodexRateLimitState {
-    let now = chrono::Local::now();
 
     let result = (|| -> Result<Vec<CodexRateLimit>, String> {
         let codex_dir = dirs::home_dir()
@@ -304,12 +301,10 @@ fn fetch_codex_rate_limits() -> CodexRateLimitState {
                     primary: CodexWindowInfo {
                         used_percent: prim["used_percent"].as_f64().unwrap_or(0.0),
                         resets_at: prim["resets_at"].as_u64().unwrap_or(0),
-                        window_minutes: prim["window_minutes"].as_u64().unwrap_or(300),
                     },
                     secondary: CodexWindowInfo {
                         used_percent: sec["used_percent"].as_f64().unwrap_or(0.0),
                         resets_at: sec["resets_at"].as_u64().unwrap_or(0),
-                        window_minutes: sec["window_minutes"].as_u64().unwrap_or(10080),
                     },
                 };
                 latest
@@ -325,9 +320,9 @@ fn fetch_codex_rate_limits() -> CodexRateLimitState {
     })();
 
     match result {
-        Ok(limits) if !limits.is_empty() => CodexRateLimitState { limits, read_at: now, error: None },
-        Ok(_) => CodexRateLimitState { limits: vec![], read_at: now, error: Some("No Codex data".into()) },
-        Err(e) => CodexRateLimitState { limits: vec![], read_at: now, error: Some(e) },
+        Ok(limits) if !limits.is_empty() => CodexRateLimitState { limits, error: None },
+        Ok(_) => CodexRateLimitState { limits: vec![], error: Some("No Codex data".into()) },
+        Err(e) => CodexRateLimitState { limits: vec![], error: Some(e) },
     }
 }
 
