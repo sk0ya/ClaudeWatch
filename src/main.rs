@@ -217,6 +217,120 @@ fn fetch_rate_limit() -> RateLimitState {
     }
 }
 
+// --- Codex Rate Limit (from local session files) ---
+
+#[derive(Clone, Debug)]
+struct CodexWindowInfo {
+    used_percent: f64,
+    resets_at: u64,    // Unix timestamp (seconds)
+    window_minutes: u64,
+}
+
+#[derive(Clone, Debug)]
+struct CodexRateLimit {
+    limit_id: String,
+    limit_name: Option<String>,
+    primary: CodexWindowInfo,
+    secondary: CodexWindowInfo,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CodexRateLimitState {
+    limits: Vec<CodexRateLimit>,
+    read_at: chrono::DateTime<chrono::Local>,
+    error: Option<String>,
+}
+
+fn fetch_codex_rate_limits() -> CodexRateLimitState {
+    let now = chrono::Local::now();
+
+    let result = (|| -> Result<Vec<CodexRateLimit>, String> {
+        let codex_dir = dirs::home_dir()
+            .ok_or_else(|| "No home dir".to_string())?
+            .join(".codex")
+            .join("sessions");
+
+        if !codex_dir.exists() {
+            return Err("Codex not installed".into());
+        }
+
+        // Collect all JSONL session files with modification times
+        let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+        let Ok(year_iter) = std::fs::read_dir(&codex_dir) else {
+            return Err("Cannot read sessions".into());
+        };
+        for ye in year_iter.flatten() {
+            let Ok(mi) = std::fs::read_dir(ye.path()) else { continue };
+            for me in mi.flatten() {
+                let Ok(di) = std::fs::read_dir(me.path()) else { continue };
+                for de in di.flatten() {
+                    // de = day directory; read files inside it
+                    let Ok(fi) = std::fs::read_dir(de.path()) else { continue };
+                    for fe in fi.flatten() {
+                        let p = fe.path();
+                        if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            if let Ok(meta) = p.metadata() {
+                                if let Ok(m) = meta.modified() {
+                                    files.push((p, m));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Newest files first
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Read up to 5 most recent files; track latest rate_limits per limit_id
+        let mut latest: HashMap<String, (CodexRateLimit, String)> = HashMap::new();
+        for (path, _) in files.iter().take(5) {
+            let Ok(content) = std::fs::read_to_string(path) else { continue };
+            for line in content.lines() {
+                let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                if val["type"].as_str() != Some("event_msg") { continue }
+                let payload = &val["payload"];
+                if payload["type"].as_str() != Some("token_count") { continue }
+                let rl = &payload["rate_limits"];
+                if rl.is_null() { continue }
+                let Some(limit_id) = rl["limit_id"].as_str() else { continue };
+                let (Some(prim), Some(sec)) = (rl.get("primary"), rl.get("secondary")) else { continue };
+
+                let ts = val["timestamp"].as_str().unwrap_or("").to_string();
+                let entry = CodexRateLimit {
+                    limit_id: limit_id.to_string(),
+                    limit_name: rl["limit_name"].as_str().map(|s| s.to_string()),
+                    primary: CodexWindowInfo {
+                        used_percent: prim["used_percent"].as_f64().unwrap_or(0.0),
+                        resets_at: prim["resets_at"].as_u64().unwrap_or(0),
+                        window_minutes: prim["window_minutes"].as_u64().unwrap_or(300),
+                    },
+                    secondary: CodexWindowInfo {
+                        used_percent: sec["used_percent"].as_f64().unwrap_or(0.0),
+                        resets_at: sec["resets_at"].as_u64().unwrap_or(0),
+                        window_minutes: sec["window_minutes"].as_u64().unwrap_or(10080),
+                    },
+                };
+                latest
+                    .entry(limit_id.to_string())
+                    .and_modify(|e| { if ts > e.1 { *e = (entry.clone(), ts.clone()); } })
+                    .or_insert((entry, ts));
+            }
+        }
+
+        let mut limits: Vec<CodexRateLimit> = latest.into_values().map(|(e, _)| e).collect();
+        limits.sort_by(|a, b| a.limit_id.cmp(&b.limit_id));
+        Ok(limits)
+    })();
+
+    match result {
+        Ok(limits) if !limits.is_empty() => CodexRateLimitState { limits, read_at: now, error: None },
+        Ok(_) => CodexRateLimitState { limits: vec![], read_at: now, error: Some("No Codex data".into()) },
+        Err(e) => CodexRateLimitState { limits: vec![], read_at: now, error: Some(e) },
+    }
+}
+
 // --- Claude Code Instance Detection ---
 
 #[derive(Clone, Debug)]
@@ -315,6 +429,7 @@ struct ClaudeWatchApp {
     last_stats_load: Instant,
     stats_error: Option<String>,
     rate_limit: Arc<Mutex<Option<RateLimitState>>>,
+    codex_rate_limit: Arc<Mutex<Option<CodexRateLimitState>>>,
     instances: Arc<Mutex<Vec<ClaudeInstance>>>,
     last_content_height: f32,
     compact_mode: bool,
@@ -323,6 +438,7 @@ struct ClaudeWatchApp {
 impl ClaudeWatchApp {
     fn new(
         rate_limit: Arc<Mutex<Option<RateLimitState>>>,
+        codex_rate_limit: Arc<Mutex<Option<CodexRateLimitState>>>,
         instances: Arc<Mutex<Vec<ClaudeInstance>>>,
     ) -> Self {
         let mut app = Self {
@@ -330,6 +446,7 @@ impl ClaudeWatchApp {
             last_stats_load: Instant::now(),
             stats_error: None,
             rate_limit,
+            codex_rate_limit,
             instances,
             last_content_height: 0.0,
             compact_mode: true,
@@ -413,6 +530,31 @@ impl ClaudeWatchApp {
             egui::Color32::from_rgb(50, 110, 200)
         } else {
             egui::Color32::from_rgb(60, 130, 190)
+        }
+    }
+
+    fn codex_limit_label(limit: &CodexRateLimit) -> String {
+        if let Some(ref name) = limit.limit_name {
+            // Take the last '-'-separated segment (e.g. "GPT-5.3-Codex-Spark" → "Spark")
+            name.rsplit('-').next().unwrap_or("Cx").to_string()
+        } else {
+            "Cx".to_string()
+        }
+    }
+
+    fn format_codex_reset_time(resets_at: u64) -> String {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if resets_at <= now_secs {
+            return "now".into();
+        }
+        let mins = (resets_at - now_secs) / 60;
+        if mins < 60 {
+            format!("{mins}min")
+        } else {
+            format!("{}h{}m", mins / 60, mins % 60)
         }
     }
 
@@ -661,6 +803,36 @@ impl eframe::App for ClaudeWatchApp {
                     ui.label("Fetching...");
                 }
 
+                // --- Codex Rate Limit ---
+                let codex_rl = self.codex_rate_limit.lock().unwrap().clone();
+                if let Some(ref codex_state) = codex_rl {
+                    if let Some(ref err) = codex_state.error {
+                        if !err.contains("not installed") && !err.contains("No Codex data") {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(150, 150, 150),
+                                format!("Codex: {err}"),
+                            );
+                        }
+                    } else {
+                        ui.add_space(2.0);
+                        for limit in &codex_state.limits {
+                            let base = Self::codex_limit_label(limit);
+                            Self::draw_usage_bar(
+                                ui,
+                                &format!("{base} 5h"),
+                                limit.primary.used_percent,
+                                &Self::format_codex_reset_time(limit.primary.resets_at),
+                            );
+                            Self::draw_usage_bar(
+                                ui,
+                                &format!("{base} 7d"),
+                                limit.secondary.used_percent,
+                                &Self::format_codex_reset_time(limit.secondary.resets_at),
+                            );
+                        }
+                    }
+                }
+
                 if !self.compact_mode {
                     ui.separator();
 
@@ -776,14 +948,23 @@ fn load_icon() -> egui::IconData {
 
 fn main() -> eframe::Result<()> {
     let rate_limit: Arc<Mutex<Option<RateLimitState>>> = Arc::new(Mutex::new(None));
+    let codex_rate_limit: Arc<Mutex<Option<CodexRateLimitState>>> = Arc::new(Mutex::new(None));
     let instances: Arc<Mutex<Vec<ClaudeInstance>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Background thread for rate limit polling
+    // Background thread for Claude rate limit polling
     let rl_clone = Arc::clone(&rate_limit);
     std::thread::spawn(move || loop {
         let state = fetch_rate_limit();
         *rl_clone.lock().unwrap() = Some(state);
         std::thread::sleep(std::time::Duration::from_secs(60));
+    });
+
+    // Background thread for Codex rate limit polling (reads local session files)
+    let codex_clone = Arc::clone(&codex_rate_limit);
+    std::thread::spawn(move || loop {
+        let state = fetch_codex_rate_limits();
+        *codex_clone.lock().unwrap() = Some(state);
+        std::thread::sleep(std::time::Duration::from_secs(30));
     });
 
     // Background thread for instance detection
@@ -795,6 +976,7 @@ fn main() -> eframe::Result<()> {
     });
 
     let rl_for_app = Arc::clone(&rate_limit);
+    let codex_rl_for_app = Arc::clone(&codex_rate_limit);
     let inst_for_app = Arc::clone(&instances);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -810,6 +992,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "ClaudeWatch",
         options,
-        Box::new(move |_cc| Ok(Box::new(ClaudeWatchApp::new(rl_for_app, inst_for_app)))),
+        Box::new(move |_cc| Ok(Box::new(ClaudeWatchApp::new(rl_for_app, codex_rl_for_app, inst_for_app)))),
     )
 }
