@@ -19,7 +19,22 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(move \"C:\\\\Projects\\\\ClaudeWatch\\\\ClaudeWatch.ico\" \"C:\\\\Projects\\\\ClaudeWatch\\\\assets\\\\ClaudeWatch.ico\")",
-      "Bash(move \"C:\\\\Projects\\\\ClaudeWatch\\\\ClaudeWatch.png\" \"C:\\\\Projects\\\\ClaudeWatch\\\\assets\\\\ClaudeWatch.png\")"
+      "Bash(move \"C:\\\\Projects\\\\ClaudeWatch\\\\ClaudeWatch.png\" \"C:\\\\Projects\\\\ClaudeWatch\\\\assets\\\\ClaudeWatch.png\")",
+      "Bash(where:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter \"\"Name=''claude.exe''\"\" | Where-Object { $_.ExecutablePath -like \"\"*\\\\.local\\\\bin*\"\" } | Select-Object ProcessId, ExecutablePath, CommandLine | Format-List')",
+      "Bash(powershell -NoProfile -Command:*)",
+      "Bash(wmic process where \"processid=4248\" get processid,executablepath,commandline /format:list)",
+      "WebSearch",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:help.openai.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:lobehub.com)",
+      "WebFetch(domain:inventivehq.com)",
+      "Bash(python3:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }

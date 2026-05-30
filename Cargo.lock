@@ -646,10 +646,12 @@ dependencies = [
  "dirs",
  "eframe",
  "image",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
  "sysinfo",
+ "windows-sys 0.61.2",
  "winres",
 ]
 
