@@ -55,6 +55,15 @@ pub fn show_window(hwnd: isize, visible: bool) {
 #[cfg(not(windows))]
 pub fn show_window(_hwnd: isize, _visible: bool) {}
 
+#[cfg(windows)]
+pub fn frame_hwnd(_frame: &eframe::Frame) -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+    let title: Vec<u16> = "ClaudeWatch".encode_utf16().chain(std::iter::once(0)).collect();
+    let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+    if hwnd.is_null() { None } else { Some(hwnd as isize) }
+}
+
+#[cfg(not(windows))]
 pub fn frame_hwnd(_frame: &eframe::Frame) -> Option<isize> {
     None
 }
