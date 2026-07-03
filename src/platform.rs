@@ -4,7 +4,7 @@ use std::time::Duration;
 use windows_sys::Win32::{
     System::SystemInformation::GetTickCount64,
     UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetLastInputInfo, LASTINPUTINFO, VK_LBUTTON},
-    UI::WindowsAndMessaging::{ShowWindowAsync, SW_HIDE, SW_SHOWNOACTIVATE},
+    UI::WindowsAndMessaging::{ShowWindowAsync, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE},
 };
 
 #[cfg(windows)]
@@ -46,7 +46,7 @@ pub fn is_left_mouse_down() -> bool {
 
 #[cfg(windows)]
 pub fn show_window(hwnd: isize, visible: bool) {
-    let cmd = if visible { SW_SHOWNOACTIVATE } else { SW_HIDE };
+    let cmd = if visible { SW_SHOWNOACTIVATE } else { SW_SHOWMINNOACTIVE };
     unsafe {
         ShowWindowAsync(hwnd as *mut core::ffi::c_void, cmd);
     }
