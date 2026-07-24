@@ -75,30 +75,46 @@ impl ClaudeWatchApp {
         }
     }
 
-    fn format_reset_time(resets_at: &str) -> String {
-        if let Ok(reset) = chrono::DateTime::parse_from_rfc3339(resets_at) {
-            let diff = reset.signed_duration_since(chrono::Utc::now());
-            Self::format_remaining(diff.num_minutes())
-        } else {
-            "?".into()
-        }
+    fn remaining_minutes(resets_at: &str) -> Option<i64> {
+        chrono::DateTime::parse_from_rfc3339(resets_at)
+            .ok()
+            .map(|reset| reset.signed_duration_since(chrono::Utc::now()).num_minutes())
     }
 
     /// Codex reports reset times as Unix seconds rather than RFC3339.
-    fn format_reset_unix(resets_at: u64) -> String {
+    fn remaining_minutes_unix(resets_at: u64) -> Option<i64> {
         if resets_at == 0 {
-            return "?".into();
+            return None;
         }
-        match chrono::DateTime::from_timestamp(resets_at as i64, 0) {
-            Some(reset) => {
-                let diff = reset.signed_duration_since(chrono::Utc::now());
-                Self::format_remaining(diff.num_minutes())
-            }
+        chrono::DateTime::from_timestamp(resets_at as i64, 0)
+            .map(|reset| reset.signed_duration_since(chrono::Utc::now()).num_minutes())
+    }
+
+    fn format_reset(remaining: Option<i64>) -> String {
+        match remaining {
+            Some(mins) => Self::format_remaining(mins),
             None => "?".into(),
         }
     }
 
-    fn draw_usage_bar(ui: &mut egui::Ui, label: &str, pct: f64, reset_str: &str) {
+    /// How far the window itself has advanced, as a percentage. Compared against
+    /// token utilization this shows whether usage is ahead of or behind pace.
+    fn elapsed_pct(remaining: Option<i64>, window_mins: i64) -> Option<f64> {
+        let remaining = remaining?;
+        if window_mins <= 0 {
+            return None;
+        }
+        let elapsed = (window_mins - remaining.max(0)) as f64;
+        Some((elapsed / window_mins as f64 * 100.0).clamp(0.0, 100.0))
+    }
+
+    fn draw_usage_bar(
+        ui: &mut egui::Ui,
+        label: &str,
+        pct: f64,
+        reset_str: &str,
+        time_pct: Option<f64>,
+    ) {
         let bar_width = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_width, 18.0), egui::Sense::hover());
         let painter = ui.painter();
@@ -107,6 +123,15 @@ impl ClaudeWatchApp {
         if fill_width > 0.0 {
             let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_width, rect.height()));
             painter.rect_filled(fill_rect, 3.0, egui::Color32::from_rgb(40, 110, 200));
+        }
+        // Pace marker: the share of the window that has already elapsed. Fill left of
+        // the marker means tokens are being spent slower than the clock, right means faster.
+        if let Some(t) = time_pct {
+            let x = rect.left() + bar_width * (t as f32 / 100.0).clamp(0.0, 1.0);
+            painter.line_segment(
+                [egui::pos2(x, rect.top() + 1.0), egui::pos2(x, rect.bottom() - 1.0)],
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(250, 210, 80)),
+            );
         }
         painter.text(
             rect.left_center() + egui::vec2(6.0, 0.0),
@@ -219,10 +244,24 @@ impl eframe::App for ClaudeWatchApp {
                     } else {
                         let usage = state.usage;
                         if let Some(fh) = usage.five_hour {
-                            Self::draw_usage_bar(ui, "5h", fh.utilization, &Self::format_reset_time(&fh.resets_at));
+                            let rem = Self::remaining_minutes(&fh.resets_at);
+                            Self::draw_usage_bar(
+                                ui,
+                                "5h",
+                                fh.utilization,
+                                &Self::format_reset(rem),
+                                Self::elapsed_pct(rem, 5 * 60),
+                            );
                         }
                         if let Some(sd) = usage.seven_day {
-                            Self::draw_usage_bar(ui, "7d", sd.utilization, &Self::format_reset_time(&sd.resets_at));
+                            let rem = Self::remaining_minutes(&sd.resets_at);
+                            Self::draw_usage_bar(
+                                ui,
+                                "7d",
+                                sd.utilization,
+                                &Self::format_reset(rem),
+                                Self::elapsed_pct(rem, 7 * 24 * 60),
+                            );
                         }
                     }
                 }
@@ -238,16 +277,41 @@ impl eframe::App for ClaudeWatchApp {
                         for l in &cstate.limits {
                             let display_name = l.limit_name.as_deref().unwrap_or(&l.limit_id);
                             for w in std::iter::once(&l.primary).chain(l.secondary.iter()) {
+                                let rem = Self::remaining_minutes_unix(w.resets_at);
                                 Self::draw_usage_bar(
                                     ui,
                                     &format!("{display_name} {}", w.window_label()),
                                     w.used_percent,
-                                    &Self::format_reset_unix(w.resets_at),
+                                    &Self::format_reset(rem),
+                                    Self::elapsed_pct(rem, w.window_minutes as i64),
                                 );
                             }
                         }
                     }
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClaudeWatchApp as App;
+
+    #[test]
+    fn elapsed_pct_tracks_window_progress() {
+        // 5h window with 3h left => 40% of the window has elapsed.
+        assert_eq!(App::elapsed_pct(Some(180), 300), Some(40.0));
+        assert_eq!(App::elapsed_pct(Some(300), 300), Some(0.0));
+        assert_eq!(App::elapsed_pct(Some(0), 300), Some(100.0));
+    }
+
+    #[test]
+    fn elapsed_pct_clamps_odd_inputs() {
+        // Reset already passed, or further out than the window width.
+        assert_eq!(App::elapsed_pct(Some(-30), 300), Some(100.0));
+        assert_eq!(App::elapsed_pct(Some(400), 300), Some(0.0));
+        // No reset time, or an unknown window width.
+        assert_eq!(App::elapsed_pct(None, 300), None);
+        assert_eq!(App::elapsed_pct(Some(180), 0), None);
     }
 }
