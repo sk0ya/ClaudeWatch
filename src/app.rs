@@ -68,8 +68,10 @@ impl ClaudeWatchApp {
             "now".into()
         } else if mins < 60 {
             format!("{mins}min")
-        } else {
+        } else if mins < 1440 {
             format!("{}h{}m", mins / 60, mins % 60)
+        } else {
+            format!("{}d{}h{}m", mins / 1440, (mins % 1440) / 60, mins % 60)
         }
     }
 
