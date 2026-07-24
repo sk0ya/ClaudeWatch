@@ -63,20 +63,36 @@ impl ClaudeWatchApp {
         self.last_stats_load = Instant::now();
     }
 
+    fn format_remaining(mins: i64) -> String {
+        if mins <= 0 {
+            "now".into()
+        } else if mins < 60 {
+            format!("{mins}min")
+        } else {
+            format!("{}h{}m", mins / 60, mins % 60)
+        }
+    }
+
     fn format_reset_time(resets_at: &str) -> String {
         if let Ok(reset) = chrono::DateTime::parse_from_rfc3339(resets_at) {
-            let now = chrono::Utc::now();
-            let diff = reset.signed_duration_since(now);
-            let mins = diff.num_minutes();
-            if mins <= 0 {
-                "now".into()
-            } else if mins < 60 {
-                format!("{mins}min")
-            } else {
-                format!("{}h{}m", mins / 60, mins % 60)
-            }
+            let diff = reset.signed_duration_since(chrono::Utc::now());
+            Self::format_remaining(diff.num_minutes())
         } else {
             "?".into()
+        }
+    }
+
+    /// Codex reports reset times as Unix seconds rather than RFC3339.
+    fn format_reset_unix(resets_at: u64) -> String {
+        if resets_at == 0 {
+            return "?".into();
+        }
+        match chrono::DateTime::from_timestamp(resets_at as i64, 0) {
+            Some(reset) => {
+                let diff = reset.signed_duration_since(chrono::Utc::now());
+                Self::format_remaining(diff.num_minutes())
+            }
+            None => "?".into(),
         }
     }
 
@@ -219,17 +235,14 @@ impl eframe::App for ClaudeWatchApp {
                     } else if !cstate.limits.is_empty() {
                         for l in &cstate.limits {
                             let display_name = l.limit_name.as_deref().unwrap_or(&l.limit_id);
-                            ui.horizontal(|ui| {
-                                ui.label(display_name);
-                            ui.add_space(4.0);
-                            ui.label(format!(
-                                "P:{:.0}% (r:{}), S:{:.0}% (r:{})",
-                                l.primary.used_percent,
-                                l.primary.resets_at,
-                                l.secondary.used_percent,
-                                l.secondary.resets_at,
-                            ));
-                            });
+                            for w in std::iter::once(&l.primary).chain(l.secondary.iter()) {
+                                Self::draw_usage_bar(
+                                    ui,
+                                    &format!("{display_name} {}", w.window_label()),
+                                    w.used_percent,
+                                    &Self::format_reset_unix(w.resets_at),
+                                );
+                            }
                         }
                     }
                 }

@@ -3,7 +3,20 @@ use std::collections::HashMap;
 #[derive(Clone, Debug)]
 pub struct CodexWindowInfo {
     pub used_percent: f64,
+    pub window_minutes: u64,
     pub resets_at: u64, // Unix timestamp (seconds)
+}
+
+impl CodexWindowInfo {
+    /// Short label derived from the window width, e.g. 300 -> "5h", 10080 -> "7d".
+    pub fn window_label(&self) -> String {
+        match self.window_minutes {
+            0 => "?".into(),
+            m if m % 1440 == 0 => format!("{}d", m / 1440),
+            m if m % 60 == 0 => format!("{}h", m / 60),
+            m => format!("{m}m"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -11,7 +24,16 @@ pub struct CodexRateLimit {
     pub limit_id: String,
     pub limit_name: Option<String>,
     pub primary: CodexWindowInfo,
-    pub secondary: CodexWindowInfo,
+    /// Codex dropped the second window in 2026-07; it is `null` in recent sessions.
+    pub secondary: Option<CodexWindowInfo>,
+}
+
+fn parse_window(v: &serde_json::Value) -> Option<CodexWindowInfo> {
+    Some(CodexWindowInfo {
+        used_percent: v.get("used_percent")?.as_f64()?,
+        window_minutes: v["window_minutes"].as_u64().unwrap_or(0),
+        resets_at: v["resets_at"].as_u64().unwrap_or(0),
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -90,7 +112,7 @@ pub fn fetch_codex_rate_limits() -> CodexRateLimitState {
                 let Some(limit_id) = rl["limit_id"].as_str() else {
                     continue;
                 };
-                let (Some(prim), Some(sec)) = (rl.get("primary"), rl.get("secondary")) else {
+                let Some(primary) = parse_window(&rl["primary"]) else {
                     continue;
                 };
 
@@ -98,14 +120,8 @@ pub fn fetch_codex_rate_limits() -> CodexRateLimitState {
                 let entry = CodexRateLimit {
                     limit_id: limit_id.to_string(),
                     limit_name: rl["limit_name"].as_str().map(|s| s.to_string()),
-                    primary: CodexWindowInfo {
-                        used_percent: prim["used_percent"].as_f64().unwrap_or(0.0),
-                        resets_at: prim["resets_at"].as_u64().unwrap_or(0),
-                    },
-                    secondary: CodexWindowInfo {
-                        used_percent: sec["used_percent"].as_f64().unwrap_or(0.0),
-                        resets_at: sec["resets_at"].as_u64().unwrap_or(0),
-                    },
+                    primary,
+                    secondary: parse_window(&rl["secondary"]),
                 };
                 latest
                     .entry(limit_id.to_string())
@@ -136,5 +152,49 @@ pub fn fetch_codex_rate_limits() -> CodexRateLimitState {
             limits: vec![],
             error: Some(e),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Shape written by Codex up to 2026-07-12: primary = 5h, secondary = weekly.
+    const OLD: &str = r#"{"limit_id":"codex","limit_name":null,
+        "primary":{"used_percent":55.0,"window_minutes":300,"resets_at":1783857922},
+        "secondary":{"used_percent":51.0,"window_minutes":10080,"resets_at":1784371149}}"#;
+
+    // Shape written since 2026-07-14: primary = weekly, secondary dropped.
+    const NEW: &str = r#"{"limit_id":"codex","limit_name":null,
+        "primary":{"used_percent":2.0,"window_minutes":10080,"resets_at":1785314804},
+        "secondary":null}"#;
+
+    #[test]
+    fn parses_old_two_window_shape() {
+        let rl: serde_json::Value = serde_json::from_str(OLD).unwrap();
+        let prim = parse_window(&rl["primary"]).unwrap();
+        let sec = parse_window(&rl["secondary"]).unwrap();
+        assert_eq!(prim.used_percent, 55.0);
+        assert_eq!(prim.window_label(), "5h");
+        assert_eq!(sec.used_percent, 51.0);
+        assert_eq!(sec.window_label(), "7d");
+    }
+
+    #[test]
+    fn null_secondary_is_absent_not_zero() {
+        let rl: serde_json::Value = serde_json::from_str(NEW).unwrap();
+        let prim = parse_window(&rl["primary"]).unwrap();
+        assert_eq!(prim.used_percent, 2.0);
+        assert_eq!(prim.window_label(), "7d");
+        assert!(parse_window(&rl["secondary"]).is_none());
+    }
+
+    #[test]
+    fn window_label_covers_odd_widths() {
+        let w = |m| CodexWindowInfo { used_percent: 0.0, window_minutes: m, resets_at: 0 };
+        assert_eq!(w(60).window_label(), "1h");
+        assert_eq!(w(90).window_label(), "90m");
+        assert_eq!(w(1440).window_label(), "1d");
+        assert_eq!(w(0).window_label(), "?");
     }
 }
