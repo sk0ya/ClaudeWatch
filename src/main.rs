@@ -9,46 +9,12 @@ mod app;
 use app::ClaudeWatchApp;
 
 use eframe::egui;
-use serde::Deserialize;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use visibility::{VisibilityControl, start_visibility_thread, SHOW_AFTER_IDLE};
 use crate::rate_limit::{RateLimitState, UsageResponse, fetch_rate_limit};
 use crate::codex::{CodexRateLimitState, fetch_codex_rate_limits};
-use crate::instances::{ClaudeInstance, detect_claude_instances, has_activity_since};
+use crate::instances::has_activity_since;
 use crate::platform::user_idle_duration;
-
-// --- Stats Cache (local file) ---
-
-#[derive(Deserialize, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-struct StatsCache {
-    #[serde(default)]
-    daily_activity: Vec<DailyActivity>,
-    #[serde(default)]
-    model_usage: HashMap<String, ModelUsage>,
-    #[serde(default)]
-    total_sessions: u64,
-    #[serde(default)]
-    total_messages: u64,
-}
-
-#[derive(Deserialize, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-struct DailyActivity {
-    date: String,
-    #[serde(default)]
-    messages: u64,
-}
-
-#[derive(Deserialize, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ModelUsage {
-    #[serde(default)]
-    tokens: u64,
-    #[serde(default)]
-    messages: u64,
-}
 
 fn load_icon() -> egui::IconData {
     let bytes = include_bytes!("../assets/ClaudeWatch.ico");
@@ -65,7 +31,6 @@ fn load_icon() -> egui::IconData {
 fn main() -> eframe::Result<()> {
     let rate_limit: Arc<Mutex<Option<RateLimitState>>> = Arc::new(Mutex::new(None));
     let codex_rate_limit: Arc<Mutex<Option<CodexRateLimitState>>> = Arc::new(Mutex::new(None));
-    let instances: Arc<Mutex<Vec<ClaudeInstance>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Background thread for Claude rate limit polling
     let rl_clone = Arc::clone(&rate_limit);
@@ -105,24 +70,15 @@ fn main() -> eframe::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(30));
     });
 
-    // Background thread for instance detection
-    let inst_clone = Arc::clone(&instances);
-    std::thread::spawn(move || loop {
-        let detected = detect_claude_instances();
-        *inst_clone.lock().unwrap() = detected;
-        std::thread::sleep(std::time::Duration::from_secs(5));
-    });
-
     let rl_for_app = Arc::clone(&rate_limit);
     let codex_rl_for_app = Arc::clone(&codex_rate_limit);
-    let inst_for_app = Arc::clone(&instances);
     let initial_visible = user_idle_duration().map_or(true, |idle| idle >= SHOW_AFTER_IDLE);
     let visibility_control = Arc::new(VisibilityControl::default());
     start_visibility_thread(Arc::clone(&visibility_control), initial_visible);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([300.0, 260.0])
+            .with_inner_size([260.0, 50.0])
             .with_always_on_top()
             .with_title("ClaudeWatch")
             .with_decorations(false)
@@ -138,7 +94,6 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(ClaudeWatchApp::new(
                 rl_for_app,
                 codex_rl_for_app,
-                inst_for_app,
                 visibility_control,
             )))
         }),
