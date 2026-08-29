@@ -17,6 +17,10 @@ impl CodexWindowInfo {
             m => format!("{m}m"),
         }
     }
+
+    pub fn is_weekly(&self) -> bool {
+        self.window_minutes == 7 * 24 * 60
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -24,8 +28,25 @@ pub struct CodexRateLimit {
     pub limit_id: String,
     pub limit_name: Option<String>,
     pub primary: CodexWindowInfo,
-    /// Codex dropped the second window in 2026-07; it is `null` in recent sessions.
+    /// Codex may omit this window depending on the session-log schema in use.
     pub secondary: Option<CodexWindowInfo>,
+}
+
+impl CodexRateLimit {
+    /// Return windows in the order that matters most in the compact overlay.
+    /// Keeping weekly first prevents it from being the row that gets clipped if
+    /// the native window is still settling on its new height.
+    pub fn windows_for_display(&self) -> Vec<&CodexWindowInfo> {
+        let mut windows: Vec<_> = std::iter::once(&self.primary)
+            .chain(self.secondary.iter())
+            .collect();
+        windows.sort_by(|a, b| {
+            b.is_weekly()
+                .cmp(&a.is_weekly())
+                .then_with(|| b.window_minutes.cmp(&a.window_minutes))
+        });
+        windows
+    }
 }
 
 fn parse_window(v: &serde_json::Value) -> Option<CodexWindowInfo> {
@@ -196,5 +217,26 @@ mod tests {
         assert_eq!(w(90).window_label(), "90m");
         assert_eq!(w(1440).window_label(), "1d");
         assert_eq!(w(0).window_label(), "?");
+    }
+
+    #[test]
+    fn weekly_window_is_prioritized_for_display() {
+        let limit = CodexRateLimit {
+            limit_id: "codex".into(),
+            limit_name: None,
+            primary: CodexWindowInfo {
+                used_percent: 10.0,
+                window_minutes: 300,
+                resets_at: 0,
+            },
+            secondary: Some(CodexWindowInfo {
+                used_percent: 20.0,
+                window_minutes: 10080,
+                resets_at: 0,
+            }),
+        };
+        let windows = limit.windows_for_display();
+        assert!(windows[0].is_weekly());
+        assert_eq!(windows[1].window_label(), "5h");
     }
 }

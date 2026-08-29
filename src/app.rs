@@ -1,5 +1,5 @@
 use crate::rate_limit::RateLimitState;
-use crate::codex::CodexRateLimitState;
+use crate::codex::{CodexRateLimitState, CodexWindowInfo};
 use crate::visibility::VisibilityControl;
 use crate::platform::{frame_hwnd, is_left_mouse_down};
 use eframe::egui;
@@ -73,6 +73,14 @@ impl ClaudeWatchApp {
         }
     }
 
+    fn codex_window_label(display_name: &str, window: &CodexWindowInfo) -> String {
+        if window.is_weekly() {
+            format!("{display_name} weekly")
+        } else {
+            format!("{display_name} {}", window.window_label())
+        }
+    }
+
     /// How far the window itself has advanced, as a percentage. Compared against
     /// token utilization this shows whether usage is ahead of or behind pace.
     fn elapsed_pct(remaining: Option<i64>, window_mins: i64) -> Option<f64> {
@@ -115,10 +123,10 @@ impl ClaudeWatchApp {
             if cstate.error.is_none() {
                 for l in &cstate.limits {
                     let display_name = l.limit_name.as_deref().unwrap_or(&l.limit_id);
-                    for w in std::iter::once(&l.primary).chain(l.secondary.iter()) {
+                    for w in l.windows_for_display() {
                         let rem = Self::remaining_minutes_unix(w.resets_at);
                         bars.push(Bar {
-                            label: format!("{display_name} {}", w.window_label()),
+                            label: Self::codex_window_label(display_name, w),
                             pct: w.used_percent,
                             reset: Self::format_reset(rem),
                             time_pct: Self::elapsed_pct(rem, w.window_minutes as i64),
@@ -239,6 +247,7 @@ impl eframe::App for ClaudeWatchApp {
 #[cfg(test)]
 mod tests {
     use super::ClaudeWatchApp as App;
+    use crate::codex::CodexWindowInfo;
 
     #[test]
     fn elapsed_pct_tracks_window_progress() {
@@ -266,5 +275,15 @@ mod tests {
         assert_eq!(App::window_height(4), 90.0);
         // The empty state still needs one row of space.
         assert_eq!(App::window_height(0), App::window_height(1));
+    }
+
+    #[test]
+    fn codex_weekly_label_is_explicit() {
+        let window = CodexWindowInfo {
+            used_percent: 0.0,
+            window_minutes: 10080,
+            resets_at: 0,
+        };
+        assert_eq!(App::codex_window_label("codex", &window), "codex weekly");
     }
 }
